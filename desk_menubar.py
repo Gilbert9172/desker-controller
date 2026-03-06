@@ -6,7 +6,23 @@ import asyncio
 import threading
 import yaml
 import os
-from AppKit import NSApp, NSApplicationActivationPolicyRegular, NSApplicationActivationPolicyAccessory
+import objc
+from AppKit import (
+    NSApp,
+    NSApplicationActivationPolicyRegular,
+    NSApplicationActivationPolicyAccessory,
+    NSWindow,
+    NSWindowStyleMaskTitled,
+    NSWindowStyleMaskClosable,
+    NSBackingStoreBuffered,
+    NSTextField,
+    NSButton,
+    NSBezelStyleRounded,
+    NSFont,
+    NSMakeRect,
+    NSWindowController,
+)
+from Foundation import NSObject
 from bleak import BleakClient
 from linak_controller.desk import Desk
 from linak_controller.util import Height
@@ -128,6 +144,174 @@ class DeskController:
         self._set_height(height.human)
 
 
+class SettingsDelegate(NSObject):
+    ref = None
+
+    def save_(self, sender):
+        self.ref.do_save()
+
+    def cancel_(self, sender):
+        self.ref.do_close()
+
+    def add_(self, sender):
+        self.ref.do_add()
+
+    def remove_(self, sender):
+        self.ref.do_remove(sender.tag())
+
+
+class SettingsWindow:
+    def __init__(self, config, on_save):
+        self._cfg = dict(config)
+        self._cfg["favourites"] = dict(config.get("favourites", {}))
+        self._on_save = on_save
+        self._fav_rows = []
+        self._delegate = SettingsDelegate.alloc().init()
+        self._delegate.ref = self
+        self._build()
+
+    def show(self):
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        NSApp.activateIgnoringOtherApps_(True)
+        self.window.center()
+        self.window.makeKeyAndOrderFront_(None)
+
+    def _label(self, text, x, y, w=160, bold=False):
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, 20))
+        lbl.setStringValue_(text)
+        lbl.setBezeled_(False)
+        lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False)
+        lbl.setSelectable_(False)
+        if bold:
+            lbl.setFont_(NSFont.boldSystemFontOfSize_(13))
+        return lbl
+
+    def _field(self, value, x, y, w=200):
+        f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, 24))
+        f.setStringValue_(str(value))
+        return f
+
+    def _btn(self, title, x, y, w=80, action=None, tag=0):
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, 28))
+        b.setTitle_(title)
+        b.setBezelStyle_(NSBezelStyleRounded)
+        b.setTarget_(self._delegate)
+        if action:
+            b.setAction_(action)
+        b.setTag_(tag)
+        return b
+
+    def _build(self):
+        favs = self._cfg.get("favourites", {})
+        W, H = 440, 300 + len(favs) * 32
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, W, H), style, NSBackingStoreBuffered, False
+        )
+        self.window.setTitle_("Settings")
+        cv = self.window.contentView()
+        y = H - 40
+
+        # --- General ---
+        cv.addSubview_(self._label("MAC Address", 20, y))
+        self.mac_field = self._field(self._cfg.get("mac_address", ""), 180, y, 236)
+        cv.addSubview_(self.mac_field)
+        y -= 36
+
+        cv.addSubview_(self._label("Connection Timeout (s)", 20, y))
+        self.timeout_field = self._field(self._cfg.get("connection_timeout", 10), 180, y, 60)
+        cv.addSubview_(self.timeout_field)
+        y -= 36
+
+        cv.addSubview_(self._label("Move Period (s)", 20, y))
+        self.period_field = self._field(self._cfg.get("move_command_period", 0.4), 180, y, 60)
+        cv.addSubview_(self.period_field)
+        y -= 44
+
+        # --- Favourites ---
+        cv.addSubview_(self._label("Favourites", 20, y, bold=True))
+        y -= 28
+
+        self._fav_rows = []
+        for name, height in favs.items():
+            nf = self._field(name, 30, y, 110)
+            hf = self._field(str(height), 150, y, 70)
+            ml = self._label("mm", 225, y, 30)
+            rb = self._btn("\u2715", 265, y - 2, 30, action="remove:", tag=len(self._fav_rows))
+            for v in (nf, hf, ml, rb):
+                cv.addSubview_(v)
+            self._fav_rows.append((nf, hf, ml, rb))
+            y -= 32
+
+        y -= 8
+        cv.addSubview_(self._label("Name:", 30, y, 42))
+        self.new_name = self._field("", 75, y, 85)
+        cv.addSubview_(self.new_name)
+        cv.addSubview_(self._label("Height:", 170, y, 50))
+        self.new_height = self._field("", 225, y, 60)
+        cv.addSubview_(self.new_height)
+        cv.addSubview_(self._label("mm", 290, y, 30))
+        cv.addSubview_(self._btn("Add", 325, y - 2, 50, action="add:"))
+
+        # --- Buttons ---
+        cv.addSubview_(self._btn("Cancel", W - 180, 16, 80, action="cancel:"))
+        cv.addSubview_(self._btn("Save", W - 90, 16, 70, action="save:"))
+
+    def do_add(self):
+        name = self.new_name.stringValue().strip()
+        height = self.new_height.stringValue().strip()
+        if not name or not height.isdigit():
+            return
+        self._snapshot_fields()
+        self._cfg["favourites"][name.lower()] = int(height)
+        self._rebuild()
+
+    def do_remove(self, tag):
+        if 0 <= tag < len(self._fav_rows) and self._fav_rows[tag]:
+            name_f = self._fav_rows[tag][0]
+            name = name_f.stringValue().strip().lower()
+            self._snapshot_fields()
+            self._cfg["favourites"].pop(name, None)
+            self._rebuild()
+
+    def do_save(self):
+        self._snapshot_fields()
+        self._on_save(self._cfg)
+        self.window.close()
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    def do_close(self):
+        self.window.close()
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    def _snapshot_fields(self):
+        self._cfg["mac_address"] = self.mac_field.stringValue().strip()
+        try:
+            self._cfg["connection_timeout"] = int(self.timeout_field.stringValue())
+        except ValueError:
+            pass
+        try:
+            self._cfg["move_command_period"] = float(self.period_field.stringValue())
+        except ValueError:
+            pass
+        favs = {}
+        for row in self._fav_rows:
+            if row is None:
+                continue
+            n = row[0].stringValue().strip()
+            h = row[1].stringValue().strip()
+            if n and h.isdigit():
+                favs[n.lower()] = int(h)
+        self._cfg["favourites"] = favs
+
+    def _rebuild(self):
+        self.window.close()
+        self._fav_rows = []
+        self._build()
+        self.show()
+
+
 class DeskMenuBarApp(rumps.App):
     def __init__(self):
         self.cfg = load_config()
@@ -155,7 +339,7 @@ class DeskMenuBarApp(rumps.App):
         self.status_item.set_callback(None)
         self.connect_item = rumps.MenuItem("Connect", callback=self.on_connect)
         self.disconnect_item = rumps.MenuItem("Disconnect", callback=self.on_disconnect)
-        self.config_item = rumps.MenuItem("Open Config...", callback=self.on_open_config)
+        self.config_item = rumps.MenuItem("Settings...", callback=self.on_settings)
         self.quit_item = rumps.MenuItem("Quit", callback=self.on_quit)
 
         items = list(self.fav_items.values())
@@ -215,6 +399,17 @@ class DeskMenuBarApp(rumps.App):
         def cb(_):
             self.ctrl.submit(self.ctrl.move_to(height))
         return cb
+
+    def _rebuild_favourites_menu(self):
+        for name, item in list(self.fav_items.items()):
+            del self.menu[item.title]
+        self.fav_items = {}
+        for name, height in self.cfg.get("favourites", {}).items():
+            key = f"{name.capitalize()} ({height}mm)"
+            item = rumps.MenuItem(key, callback=self._make_fav_cb(height))
+            self.fav_items[name] = item
+            self.menu.insert_before(self.custom_item.title, item)
+        self._rebuild_remove_menu()
 
     def _rebuild_remove_menu(self):
         # Remove existing items
@@ -339,8 +534,15 @@ class DeskMenuBarApp(rumps.App):
         self.ctrl.submit(self.ctrl.disconnect())
         self.title = "\u2b0d --mm"
 
-    def on_open_config(self, _):
-        os.system(f'open "{CONFIG_PATH}"')
+    def on_settings(self, _):
+        self._settings_win = SettingsWindow(self.cfg, self._apply_settings)
+        self._settings_win.show()
+
+    def _apply_settings(self, new_cfg):
+        save_config(new_cfg)
+        self.cfg = new_cfg
+        self.ctrl.config = dict(new_cfg)
+        self._rebuild_favourites_menu()
 
     def on_quit(self, _):
         self.ctrl.submit(self.ctrl.disconnect())

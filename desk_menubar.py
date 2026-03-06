@@ -6,7 +6,7 @@ import asyncio
 import threading
 import yaml
 import os
-from AppKit import NSApp
+from AppKit import NSApp, NSApplicationActivationPolicyRegular, NSApplicationActivationPolicyAccessory
 from bleak import BleakClient
 from linak_controller.desk import Desk
 from linak_controller.util import Height
@@ -254,7 +254,12 @@ class DeskMenuBarApp(rumps.App):
 
     @staticmethod
     def _activate():
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
         NSApp.activateIgnoringOtherApps_(True)
+
+    @staticmethod
+    def _deactivate():
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
 
     def on_add_preset(self, _):
         self._activate()
@@ -267,6 +272,7 @@ class DeskMenuBarApp(rumps.App):
         )
         name_resp = name_win.run()
         if not name_resp.clicked or not name_resp.text.strip():
+            self._deactivate()
             return
         preset_name = name_resp.text.strip().lower()
 
@@ -278,6 +284,7 @@ class DeskMenuBarApp(rumps.App):
             cancel="Cancel",
         )
         height_resp = height_win.run()
+        self._deactivate()
         if not height_resp.clicked or not height_resp.text.strip().isdigit():
             return
 
@@ -287,12 +294,13 @@ class DeskMenuBarApp(rumps.App):
         self._activate()
         if self._pending_height is None and self.title == "\u2b0d --mm":
             rumps.alert("Not connected", "Connect to the desk first.")
+            self._deactivate()
             return
-        # Parse current height from title
         try:
             current = int(self.title.replace("\u2b0d ", "").replace("mm", "").strip())
         except ValueError:
             rumps.alert("Error", "Current height is not available.")
+            self._deactivate()
             return
 
         name_win = rumps.Window(
@@ -303,6 +311,7 @@ class DeskMenuBarApp(rumps.App):
             cancel="Cancel",
         )
         resp = name_win.run()
+        self._deactivate()
         if resp.clicked and resp.text.strip():
             self._add_fav_to_menu(resp.text.strip().lower(), current)
 
@@ -316,6 +325,7 @@ class DeskMenuBarApp(rumps.App):
             cancel="Cancel",
         )
         resp = window.run()
+        self._deactivate()
         if resp.clicked and resp.text.strip().isdigit():
             self.ctrl.submit(self.ctrl.move_to(int(resp.text.strip())))
 

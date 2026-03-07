@@ -74,6 +74,7 @@ class DeskController:
         self._thread.start()
         self.on_height = None
         self.on_status = None
+        self.on_initial_connect_failed = lambda: None
 
     def _run_loop(self):
         asyncio.set_event_loop(self.loop)
@@ -99,9 +100,22 @@ class DeskController:
             self._set_status("Connected")
             height, _ = await self.desk.get_height_speed()
             self._set_height(height.human)
+            return True
         except Exception as e:
             self.desk = None
             self._set_status(f"Error: {e}")
+            return False
+
+    async def initial_connect(self):
+        for attempt in range(2):
+            if attempt > 0:
+                self._set_status("Retrying connection...")
+                await asyncio.sleep(1)
+            success = await self.connect()
+            if success:
+                return True
+        self.on_initial_connect_failed()
+        return False
 
     async def disconnect(self):
         if self.desk and self.desk.client.is_connected:
@@ -340,6 +354,7 @@ class DeskMenuBarApp(rumps.App):
         self._pending_height = None
         self._pending_status = None
         self._current_height = None
+        self._initial_connect_failed = False
 
         # Menu items
         self.fav_items = {}
@@ -387,13 +402,14 @@ class DeskMenuBarApp(rumps.App):
         self.ctrl = DeskController(self.cfg)
         self.ctrl.on_height = self._on_height
         self.ctrl.on_status = self._on_status
+        self.ctrl.on_initial_connect_failed = self._on_initial_connect_failed
 
         # Timer to safely apply UI updates on main thread
         self._ui_timer = rumps.Timer(self._apply_ui_updates, 0.3)
         self._ui_timer.start()
 
-        # Auto-connect
-        self.ctrl.submit(self.ctrl.connect())
+        # Auto-connect with retry
+        self.ctrl.submit(self.ctrl.initial_connect())
 
     # --- Thread-safe UI bridge ---
 
@@ -403,6 +419,9 @@ class DeskMenuBarApp(rumps.App):
     def _on_status(self, s):
         self._pending_status = s
 
+    def _on_initial_connect_failed(self):
+        self._initial_connect_failed = True
+
     def _apply_ui_updates(self, _):
         if self._pending_height is not None:
             self._current_height = self._pending_height
@@ -411,6 +430,20 @@ class DeskMenuBarApp(rumps.App):
             s = self._pending_status
             self._pending_status = None
             self.status_item.title = f"Status: {s}"
+        if self._initial_connect_failed:
+            self._initial_connect_failed = False
+            self._show_connection_error()
+
+    def _show_connection_error(self):
+        self._activate()
+        resp = rumps.alert(
+            title="Connection Failed",
+            message="Failed to connect to the desk after 2 attempts.\nPlease check that the desk is powered on and in range.",
+            ok="Quit",
+        )
+        self._deactivate()
+        if resp == 1:
+            rumps.quit_application()
 
     # --- Callbacks ---
 

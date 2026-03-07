@@ -14,6 +14,7 @@ from AppKit import (
     NSWindow,
     NSWindowStyleMaskTitled,
     NSWindowStyleMaskClosable,
+    NSWindowStyleMaskResizable,
     NSBackingStoreBuffered,
     NSTextField,
     NSButton,
@@ -22,6 +23,8 @@ from AppKit import (
     NSColor,
     NSMakeRect,
     NSWindowController,
+    NSScrollView,
+    NSView,
 )
 from Foundation import NSObject
 from bleak import BleakClient
@@ -222,13 +225,37 @@ class SettingsWindow:
 
     def _build(self):
         favs = self._cfg.get("favourites", {})
-        W, H = 520, max(480, 360 + len(favs) * 32)
-        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
+        W = 520
+        content_h = max(480, 360 + len(favs) * 32)
+        window_h = min(content_h, 600)
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
-            NSMakeRect(0, 0, W, H), style, NSBackingStoreBuffered, False
+            NSMakeRect(0, 0, W, window_h), style, NSBackingStoreBuffered, False
         )
         self.window.setTitle_("Settings")
-        cv = self.window.contentView()
+        self.window.setMinSize_((400, 300))
+
+        # Scroll view
+        self._scroll_view = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, W, window_h)
+        )
+        self._scroll_view.setHasVerticalScroller_(True)
+        self._scroll_view.setAutoresizingMask_(18)  # NSViewWidthSizable | NSViewHeightSizable
+
+        self._doc_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, W, content_h)
+        )
+        self._scroll_view.setDocumentView_(self._doc_view)
+        self.window.setContentView_(self._scroll_view)
+
+        self._build_content()
+        self._scroll_to_top()
+
+    def _build_content(self):
+        favs = self._cfg.get("favourites", {})
+        W, H = 520, max(480, 360 + len(favs) * 32)
+        self._doc_view.setFrame_(NSMakeRect(0, 0, W, H))
+        cv = self._doc_view
         y = H - 40
 
         # --- General ---
@@ -260,7 +287,7 @@ class SettingsWindow:
             nf = self._field(name, 30, y, 110)
             hf = self._field(str(height), 150, y, 70)
             ml = self._label("mm", 225, y, 30)
-            rb = self._btn("\u2715", 265, y - 2, 30, action="remove:", tag=len(self._fav_rows))
+            rb = self._btn("X", 265, y - 2, 30, action="remove:", tag=len(self._fav_rows))
             for v in (nf, hf, ml, rb):
                 cv.addSubview_(v)
             self._fav_rows.append((nf, hf, ml, rb))
@@ -295,7 +322,8 @@ class SettingsWindow:
             name = name_f.stringValue().strip().lower()
             self._snapshot_fields()
             self._cfg["favourites"].pop(name, None)
-            
+            self._rebuild()
+
     def do_toggle_mac(self):
         editable = not self.mac_field.isEditable()
         self.mac_field.setEditable_(editable)
@@ -338,10 +366,18 @@ class SettingsWindow:
         self._cfg["favourites"] = favs
 
     def _rebuild(self):
-        self.window.close()
+        for subview in list(self._doc_view.subviews()):
+            subview.removeFromSuperview()
         self._fav_rows = []
-        self._build()
-        self.show()
+        self._build_content()
+        self._scroll_to_top()
+
+    def _scroll_to_top(self):
+        doc_h = self._doc_view.frame().size.height
+        clip_h = self._scroll_view.contentSize().height
+        if doc_h > clip_h:
+            self._scroll_view.contentView().scrollToPoint_((0, doc_h - clip_h))
+            self._scroll_view.reflectScrolledClipView_(self._scroll_view.contentView())
 
 
 class DeskMenuBarApp(rumps.App):

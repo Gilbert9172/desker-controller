@@ -281,8 +281,7 @@ class SettingsWindow:
             name = name_f.stringValue().strip().lower()
             self._snapshot_fields()
             self._cfg["favourites"].pop(name, None)
-            self._rebuild()
-
+            
     def do_toggle_mac(self):
         editable = not self.mac_field.isEditable()
         self.mac_field.setEditable_(editable)
@@ -419,15 +418,32 @@ class DeskMenuBarApp(rumps.App):
             self.ctrl.submit(self.ctrl.move_to(height))
         return cb
 
-    def _rebuild_favourites_menu(self):
-        for name, item in list(self.fav_items.items()):
-            del self.menu[item.title]
+    def _rebuild_full_menu(self):
+        self.menu.clear()
         self.fav_items = {}
         for name, height in self.cfg.get("favourites", {}).items():
             key = f"{name.capitalize()} ({height}mm)"
             item = rumps.MenuItem(key, callback=self._make_fav_cb(height))
             self.fav_items[name] = item
-            self.menu.insert_before(self.custom_item.title, item)
+        items = list(self.fav_items.values())
+        items += [
+            None,
+            self.custom_item,
+            self.refresh_item,
+            None,
+            self.add_preset_item,
+            self.save_current_item,
+            self.remove_preset_menu,
+            None,
+            self.status_item,
+            self.connect_item,
+            self.disconnect_item,
+            None,
+            self.config_item,
+            None,
+            self.quit_item,
+        ]
+        self.menu = items
         self._rebuild_remove_menu()
 
     def _rebuild_remove_menu(self):
@@ -443,23 +459,13 @@ class DeskMenuBarApp(rumps.App):
         """Add a single favourite to the live menu and config, then save."""
         self.cfg.setdefault("favourites", {})[name] = height
         save_config(self.cfg)
-
-        key = f"{name.capitalize()} ({height}mm)"
-        item = rumps.MenuItem(key, callback=self._make_fav_cb(height))
-        self.fav_items[name] = item
-        # Insert before the first separator (index 0 in the internal menu)
-        self.menu.insert_before(self.custom_item.title, item)
-        self._rebuild_remove_menu()
+        self._rebuild_full_menu()
 
     def _remove_fav_from_menu(self, name):
         """Remove a favourite from the live menu and config, then save."""
-        height = self.cfg.get("favourites", {}).pop(name, None)
+        self.cfg.get("favourites", {}).pop(name, None)
         save_config(self.cfg)
-
-        item = self.fav_items.pop(name, None)
-        if item:
-            del self.menu[item.title]
-        self._rebuild_remove_menu()
+        self._rebuild_full_menu()
 
     def _make_remove_cb(self, name):
         def cb(_):
@@ -561,7 +567,7 @@ class DeskMenuBarApp(rumps.App):
         save_config(new_cfg)
         self.cfg = new_cfg
         self.ctrl.config = dict(new_cfg)
-        self._rebuild_favourites_menu()
+        self._rebuild_full_menu()
 
     def on_quit(self, _):
         self.ctrl.submit(self.ctrl.disconnect())

@@ -25,6 +25,7 @@ from AppKit import (
     NSWindowController,
     NSScrollView,
     NSView,
+    NSEvent,
 )
 from Foundation import NSObject
 from bleak import BleakClient
@@ -46,6 +47,7 @@ DEFAULT_CONFIG = {
         "sit": 683,
         "stand": 1040,
     },
+    "shortcuts": {},
 }
 
 
@@ -380,6 +382,278 @@ class SettingsWindow:
             self._scroll_view.reflectScrolledClipView_(self._scroll_view.contentView())
 
 
+class ShortcutsDelegate(NSObject):
+    ref = None
+
+    def save_(self, sender):
+        self.ref.do_save()
+
+    def cancel_(self, sender):
+        self.ref.do_close()
+
+    def record_(self, sender):
+        self.ref.do_record(sender.tag())
+
+    def clear_(self, sender):
+        self.ref.do_clear(sender.tag())
+
+
+class ShortcutsWindow:
+    MOD_CONTROL = 1 << 18
+    MOD_OPTION = 1 << 19
+    MOD_SHIFT = 1 << 17
+    MOD_COMMAND = 1 << 20
+    MOD_MASK = MOD_CONTROL | MOD_OPTION | MOD_SHIFT | MOD_COMMAND
+    NS_EVENT_MASK_KEY_DOWN = 1 << 10
+
+    SPECIAL_KEYS = {
+        36: "↩", 48: "⇥", 49: "Space", 51: "⌫", 53: "⎋",
+        123: "←", 124: "→", 125: "↓", 126: "↑",
+        122: "F1", 120: "F2", 99: "F3", 118: "F4",
+        96: "F5", 97: "F6", 98: "F7", 100: "F8",
+        101: "F9", 109: "F10", 103: "F11", 111: "F12",
+    }
+
+    def __init__(self, config, on_save):
+        self._cfg_shortcuts = {}
+        for name, data in config.get("shortcuts", {}).items():
+            if isinstance(data, dict):
+                self._cfg_shortcuts[name] = dict(data)
+        self._favourites = dict(config.get("favourites", {}))
+        self._on_save = on_save
+        self._rows = []
+        self._recording_index = None
+        self._local_monitor = None
+        self._global_monitor = None
+        self._delegate = ShortcutsDelegate.alloc().init()
+        self._delegate.ref = self
+        self._build()
+
+    def show(self):
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyRegular)
+        NSApp.activateIgnoringOtherApps_(True)
+        self.window.center()
+        self.window.makeKeyAndOrderFront_(None)
+
+    def _label(self, text, x, y, w=160, bold=False):
+        lbl = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, 20))
+        lbl.setStringValue_(text)
+        lbl.setBezeled_(False)
+        lbl.setDrawsBackground_(False)
+        lbl.setEditable_(False)
+        lbl.setSelectable_(False)
+        if bold:
+            lbl.setFont_(NSFont.boldSystemFontOfSize_(13))
+        return lbl
+
+    def _field(self, value, x, y, w=200):
+        f = NSTextField.alloc().initWithFrame_(NSMakeRect(x, y, w, 24))
+        f.setStringValue_(str(value))
+        f.setEditable_(False)
+        f.setSelectable_(False)
+        return f
+
+    def _btn(self, title, x, y, w=80, action=None, tag=0):
+        b = NSButton.alloc().initWithFrame_(NSMakeRect(x, y, w, 28))
+        b.setTitle_(title)
+        b.setBezelStyle_(NSBezelStyleRounded)
+        b.setTarget_(self._delegate)
+        if action:
+            b.setAction_(action)
+        b.setTag_(tag)
+        return b
+
+    def _build(self):
+        favs = self._favourites
+        W = 480
+        content_h = max(300, 120 + len(favs) * 40)
+        window_h = min(content_h, 500)
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskResizable
+        self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
+            NSMakeRect(0, 0, W, window_h), style, NSBackingStoreBuffered, False
+        )
+        self.window.setTitle_("Shortcuts")
+        self.window.setMinSize_((400, 250))
+
+        self._scroll_view = NSScrollView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, W, window_h)
+        )
+        self._scroll_view.setHasVerticalScroller_(True)
+        self._scroll_view.setAutoresizingMask_(18)
+
+        self._doc_view = NSView.alloc().initWithFrame_(
+            NSMakeRect(0, 0, W, content_h)
+        )
+        self._scroll_view.setDocumentView_(self._doc_view)
+        self.window.setContentView_(self._scroll_view)
+
+        self._build_content()
+        self._scroll_to_top()
+
+    def _build_content(self):
+        favs = self._favourites
+        W = 480
+        H = max(300, 120 + len(favs) * 40)
+        self._doc_view.setFrame_(NSMakeRect(0, 0, W, H))
+        cv = self._doc_view
+        y = H - 40
+
+        cv.addSubview_(self._label("Shortcuts", 20, y, bold=True))
+        y -= 8
+        cv.addSubview_(self._label(
+            "Assign keyboard shortcuts to your presets.", 20, y - 18, w=400
+        ))
+        y -= 44
+
+        self._rows = []
+        for i, (name, height) in enumerate(favs.items()):
+            label_text = f"{name.capitalize()} ({height}mm)"
+            cv.addSubview_(self._label(label_text, 20, y, w=150))
+
+            shortcut_data = self._cfg_shortcuts.get(name, {})
+            display = shortcut_data.get("display", "") if isinstance(shortcut_data, dict) else ""
+            sf = self._field(display, 175, y, 120)
+            sf.setAlignment_(1)  # center
+            sf.setPlaceholderString_("None")
+            cv.addSubview_(sf)
+
+            rec_btn = self._btn("Record", 305, y - 2, 70, action="record:", tag=i)
+            cv.addSubview_(rec_btn)
+
+            clr_btn = self._btn("Clear", 380, y - 2, 55, action="clear:", tag=i)
+            cv.addSubview_(clr_btn)
+
+            self._rows.append({"name": name, "field": sf, "rec_btn": rec_btn})
+            y -= 40
+
+        cv.addSubview_(self._btn("Cancel", W - 180, 16, 80, action="cancel:"))
+        cv.addSubview_(self._btn("Save", W - 90, 16, 70, action="save:"))
+
+    def do_record(self, tag):
+        if 0 <= tag < len(self._rows):
+            self._stop_recording()
+            self._recording_index = tag
+            row = self._rows[tag]
+            row["field"].setStringValue_("Type shortcut...")
+            row["rec_btn"].setTitle_("...")
+
+            self._local_monitor = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(
+                self.NS_EVENT_MASK_KEY_DOWN, self._handle_local_key
+            )
+            self._global_monitor = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(
+                self.NS_EVENT_MASK_KEY_DOWN, self._handle_global_key
+            )
+
+    def _handle_global_key(self, event):
+        self._process_key_event(event)
+
+    def _handle_local_key(self, event):
+        self._process_key_event(event)
+        return None  # consume event
+
+    def _process_key_event(self, event):
+        if self._recording_index is None:
+            return
+
+        key_code = event.keyCode()
+        idx = self._recording_index
+        row = self._rows[idx]
+
+        # Escape cancels recording
+        if key_code == 53:
+            shortcut_data = self._cfg_shortcuts.get(row["name"], {})
+            display = shortcut_data.get("display", "") if isinstance(shortcut_data, dict) else ""
+            row["field"].setStringValue_(display)
+            row["rec_btn"].setTitle_("Record")
+            self._stop_recording()
+            return
+
+        modifiers = event.modifierFlags()
+        if not (modifiers & self.MOD_MASK):
+            return  # require at least one modifier
+
+        chars = event.charactersIgnoringModifiers() or ""
+        display = self._build_display(modifiers, chars, key_code)
+        name = row["name"]
+        new_mods = modifiers & self.MOD_MASK
+
+        # Clear duplicate shortcut from other presets
+        for other_name, other_data in list(self._cfg_shortcuts.items()):
+            if other_name != name and isinstance(other_data, dict):
+                if other_data.get("key_code") == key_code and other_data.get("modifiers") == new_mods:
+                    self._cfg_shortcuts.pop(other_name)
+                    for r in self._rows:
+                        if r["name"] == other_name:
+                            r["field"].setStringValue_("")
+                            break
+
+        self._cfg_shortcuts[name] = {
+            "key_code": key_code,
+            "modifiers": new_mods,
+            "characters": chars,
+            "display": display,
+        }
+
+        row["field"].setStringValue_(display)
+        row["rec_btn"].setTitle_("Record")
+        self._stop_recording()
+
+    def _build_display(self, modifiers, chars, key_code):
+        parts = []
+        if modifiers & self.MOD_CONTROL:
+            parts.append("⌃")
+        if modifiers & self.MOD_OPTION:
+            parts.append("⌥")
+        if modifiers & self.MOD_SHIFT:
+            parts.append("⇧")
+        if modifiers & self.MOD_COMMAND:
+            parts.append("⌘")
+
+        if key_code in self.SPECIAL_KEYS:
+            parts.append(self.SPECIAL_KEYS[key_code])
+        elif chars:
+            parts.append(chars.upper())
+        else:
+            parts.append(f"Key{key_code}")
+
+        return "".join(parts)
+
+    def _stop_recording(self):
+        self._recording_index = None
+        if self._local_monitor:
+            NSEvent.removeMonitor_(self._local_monitor)
+            self._local_monitor = None
+        if self._global_monitor:
+            NSEvent.removeMonitor_(self._global_monitor)
+            self._global_monitor = None
+
+    def do_clear(self, tag):
+        if 0 <= tag < len(self._rows):
+            self._stop_recording()
+            row = self._rows[tag]
+            row["field"].setStringValue_("")
+            row["rec_btn"].setTitle_("Record")
+            self._cfg_shortcuts.pop(row["name"], None)
+
+    def do_save(self):
+        self._stop_recording()
+        self._on_save(self._cfg_shortcuts)
+        self.window.close()
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    def do_close(self):
+        self._stop_recording()
+        self.window.close()
+        NSApp.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+
+    def _scroll_to_top(self):
+        doc_h = self._doc_view.frame().size.height
+        clip_h = self._scroll_view.contentSize().height
+        if doc_h > clip_h:
+            self._scroll_view.contentView().scrollToPoint_((0, doc_h - clip_h))
+            self._scroll_view.reflectScrolledClipView_(self._scroll_view.contentView())
+
+
 class DeskMenuBarApp(rumps.App):
     def __init__(self):
         self.cfg = load_config()
@@ -411,6 +685,7 @@ class DeskMenuBarApp(rumps.App):
         self.connect_item = rumps.MenuItem("Connect", callback=self.on_connect)
         self.disconnect_item = rumps.MenuItem("Disconnect", callback=self.on_disconnect)
         self.config_item = rumps.MenuItem("Settings...", callback=self.on_settings)
+        self.shortcuts_item = rumps.MenuItem("Shortcuts...", callback=self.on_shortcuts)
         self.quit_item = rumps.MenuItem("Quit", callback=self.on_quit)
 
         items = list(self.fav_items.values())
@@ -428,11 +703,13 @@ class DeskMenuBarApp(rumps.App):
             self.disconnect_item,
             None,
             self.config_item,
+            self.shortcuts_item,
             None,
             self.quit_item,
         ]
         self.menu = items
         self._rebuild_remove_menu()
+        self._hotkey_monitors = []
 
         # Controller (background async thread)
         self.ctrl = DeskController(self.cfg)
@@ -443,6 +720,9 @@ class DeskMenuBarApp(rumps.App):
         # Timer to safely apply UI updates on main thread
         self._ui_timer = rumps.Timer(self._apply_ui_updates, 0.3)
         self._ui_timer.start()
+
+        # Global hotkeys
+        self._register_hotkeys()
 
         # Auto-connect with retry
         self.ctrl.submit(self.ctrl.initial_connect())
@@ -510,11 +790,13 @@ class DeskMenuBarApp(rumps.App):
             self.disconnect_item,
             None,
             self.config_item,
+            self.shortcuts_item,
             None,
             self.quit_item,
         ]
         self.menu = items
         self._rebuild_remove_menu()
+        self._register_hotkeys()
 
     def _rebuild_remove_menu(self):
         # Remove existing items
@@ -632,7 +914,63 @@ class DeskMenuBarApp(rumps.App):
         save_config(new_cfg)
         self.cfg = new_cfg
         self.ctrl.config = dict(new_cfg)
+        # Clean up shortcuts for removed favorites
+        shortcuts = self.cfg.get("shortcuts", {})
+        favs = self.cfg.get("favourites", {})
+        removed = [name for name in shortcuts if name not in favs]
+        for name in removed:
+            shortcuts.pop(name)
+        if removed:
+            save_config(self.cfg)
         self._rebuild_full_menu()
+
+    def on_shortcuts(self, _):
+        self._shortcuts_win = ShortcutsWindow(self.cfg, self._apply_shortcuts)
+        self._shortcuts_win.show()
+
+    def _apply_shortcuts(self, shortcuts):
+        self.cfg["shortcuts"] = shortcuts
+        save_config(self.cfg)
+        self._register_hotkeys()
+
+    def _register_hotkeys(self):
+        for m in self._hotkey_monitors:
+            NSEvent.removeMonitor_(m)
+        self._hotkey_monitors = []
+
+        shortcuts = self.cfg.get("shortcuts", {})
+        if not shortcuts:
+            return
+
+        mask = 1 << 10  # NSEventMaskKeyDown
+
+        def handle_global(event):
+            self._check_hotkey(event)
+
+        def handle_local(event):
+            if self._check_hotkey(event):
+                return None
+            return event
+
+        m1 = NSEvent.addGlobalMonitorForEventsMatchingMask_handler_(mask, handle_global)
+        m2 = NSEvent.addLocalMonitorForEventsMatchingMask_handler_(mask, handle_local)
+        self._hotkey_monitors = [m for m in [m1, m2] if m]
+
+    def _check_hotkey(self, event):
+        shortcuts = self.cfg.get("shortcuts", {})
+        mod_mask = ShortcutsWindow.MOD_MASK
+        event_mods = event.modifierFlags() & mod_mask
+        event_key = event.keyCode()
+
+        for name, data in shortcuts.items():
+            if not isinstance(data, dict):
+                continue
+            if data.get("key_code") == event_key and data.get("modifiers") == event_mods:
+                height = self.cfg.get("favourites", {}).get(name)
+                if height is not None:
+                    self.ctrl.submit(self.ctrl.move_to(height))
+                return True
+        return False
 
     def on_quit(self, _):
         self.ctrl.submit(self.ctrl.disconnect())

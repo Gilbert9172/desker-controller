@@ -1,7 +1,7 @@
 from setuptools import setup
 
 APP = ["desk_menubar.py"]
-DATA_FILES = []
+DATA_FILES = [(".", ["desk_iconTemplate.png", "desk_iconTemplate@2x.png"])]
 OPTIONS = {
     "argv_emulation": False,
     "plist": {

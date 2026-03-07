@@ -333,11 +333,13 @@ class SettingsWindow:
 class DeskMenuBarApp(rumps.App):
     def __init__(self):
         self.cfg = load_config()
-        super().__init__("Desk", title="\u2b0d --mm", quit_button=None)
+        icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "desk_iconTemplate.png")
+        super().__init__("Desk", title=None, icon=icon_path, template=True, quit_button=None)
 
         # Shared state for thread-safe UI updates
         self._pending_height = None
         self._pending_status = None
+        self._current_height = None
 
         # Menu items
         self.fav_items = {}
@@ -403,9 +405,8 @@ class DeskMenuBarApp(rumps.App):
 
     def _apply_ui_updates(self, _):
         if self._pending_height is not None:
-            h = self._pending_height
+            self._current_height = self._pending_height
             self._pending_height = None
-            self.title = f"\u2b0d {h:.0f}mm"
         if self._pending_status is not None:
             s = self._pending_status
             self._pending_status = None
@@ -512,16 +513,11 @@ class DeskMenuBarApp(rumps.App):
 
     def on_save_current(self, _):
         self._activate()
-        if self._pending_height is None and self.title == "\u2b0d --mm":
+        if self._current_height is None:
             rumps.alert("Not connected", "Connect to the desk first.")
             self._deactivate()
             return
-        try:
-            current = int(self.title.replace("\u2b0d ", "").replace("mm", "").strip())
-        except ValueError:
-            rumps.alert("Error", "Current height is not available.")
-            self._deactivate()
-            return
+        current = int(self._current_height)
 
         name_win = rumps.Window(
             message=f"Save current height ({current}mm) as:",
@@ -557,7 +553,7 @@ class DeskMenuBarApp(rumps.App):
 
     def on_disconnect(self, _):
         self.ctrl.submit(self.ctrl.disconnect())
-        self.title = "\u2b0d --mm"
+        self._current_height = None
 
     def on_settings(self, _):
         self._settings_win = SettingsWindow(self.cfg, self._apply_settings)

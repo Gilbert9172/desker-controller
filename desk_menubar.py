@@ -19,6 +19,7 @@ from AppKit import (
     NSButton,
     NSBezelStyleRounded,
     NSFont,
+    NSColor,
     NSMakeRect,
     NSWindowController,
 )
@@ -159,6 +160,9 @@ class SettingsDelegate(NSObject):
     def remove_(self, sender):
         self.ref.do_remove(sender.tag())
 
+    def toggleMac_(self, sender):
+        self.ref.do_toggle_mac()
+
 
 class SettingsWindow:
     def __init__(self, config, on_save):
@@ -204,7 +208,7 @@ class SettingsWindow:
 
     def _build(self):
         favs = self._cfg.get("favourites", {})
-        W, H = 440, 300 + len(favs) * 32
+        W, H = 520, max(480, 360 + len(favs) * 32)
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable
         self.window = NSWindow.alloc().initWithContentRect_styleMask_backing_defer_(
             NSMakeRect(0, 0, W, H), style, NSBackingStoreBuffered, False
@@ -215,8 +219,12 @@ class SettingsWindow:
 
         # --- General ---
         cv.addSubview_(self._label("MAC Address", 20, y))
-        self.mac_field = self._field(self._cfg.get("mac_address", ""), 180, y, 236)
+        self.mac_field = self._field(self._cfg.get("mac_address", ""), 180, y, 176)
+        self.mac_field.setEditable_(False)
+        self.mac_field.setTextColor_(NSColor.disabledControlTextColor())
         cv.addSubview_(self.mac_field)
+        self.mac_edit_btn = self._btn("Edit", 362, y - 2, 55, action="toggleMac:")
+        cv.addSubview_(self.mac_edit_btn)
         y -= 36
 
         cv.addSubview_(self._label("Connection Timeout (s)", 20, y))
@@ -274,6 +282,17 @@ class SettingsWindow:
             self._snapshot_fields()
             self._cfg["favourites"].pop(name, None)
             self._rebuild()
+
+    def do_toggle_mac(self):
+        editable = not self.mac_field.isEditable()
+        self.mac_field.setEditable_(editable)
+        if editable:
+            self.mac_field.setTextColor_(NSColor.controlTextColor())
+            self.mac_edit_btn.setTitle_("Lock")
+            self.window.makeFirstResponder_(self.mac_field)
+        else:
+            self.mac_field.setTextColor_(NSColor.disabledControlTextColor())
+            self.mac_edit_btn.setTitle_("Edit")
 
     def do_save(self):
         self._snapshot_fields()

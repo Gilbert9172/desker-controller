@@ -10,8 +10,10 @@ OPTIONS = {
         "CFBundleIdentifier": "com.linak.deskcontroller",
         "CFBundleVersion": "1.0.0",
         "CFBundleShortVersionString": "1.0.0",
+        "CFBundleIconFile": "desk_icon.icns",
         "LSUIElement": True,  # Menu bar app (no dock icon)
     },
+    "iconfile": "desk_icon.icns",
     "packages": [
         "rumps",
         "bleak",

@@ -179,6 +179,12 @@ class SettingsDelegate(NSObject):
     def remove_(self, sender):
         self.ref.do_remove(sender.tag())
 
+    def moveUp_(self, sender):
+        self.ref.do_move_up(sender.tag())
+
+    def moveDown_(self, sender):
+        self.ref.do_move_down(sender.tag())
+
     def toggleMac_(self, sender):
         self.ref.do_toggle_mac()
 
@@ -285,14 +291,22 @@ class SettingsWindow:
         y -= 28
 
         self._fav_rows = []
+        fav_count = len(favs)
         for name, height in favs.items():
+            idx = len(self._fav_rows)
             nf = self._field(name, 30, y, 110)
             hf = self._field(str(height), 150, y, 70)
             ml = self._label("mm", 225, y, 30)
-            rb = self._btn("X", 265, y - 2, 30, action="remove:", tag=len(self._fav_rows))
-            for v in (nf, hf, ml, rb):
+            rb = self._btn("X", 260, y - 2, 34, action="remove:", tag=idx)
+            ub = self._btn("▲", 300, y - 2, 28, action="moveUp:", tag=idx)
+            db = self._btn("▼", 330, y - 2, 28, action="moveDown:", tag=idx)
+            if idx == 0:
+                ub.setEnabled_(False)
+            if idx == fav_count - 1:
+                db.setEnabled_(False)
+            for v in (nf, hf, ml, rb, ub, db):
                 cv.addSubview_(v)
-            self._fav_rows.append((nf, hf, ml, rb))
+            self._fav_rows.append((nf, hf, ml, rb, ub, db))
             y -= 32
 
         y -= 8
@@ -325,6 +339,26 @@ class SettingsWindow:
             self._snapshot_fields()
             self._cfg["favourites"].pop(name, None)
             self._rebuild()
+
+    def do_move_up(self, tag):
+        keys = list(self._cfg["favourites"].keys())
+        if tag <= 0 or tag >= len(keys):
+            return
+        self._snapshot_fields()
+        items = list(self._cfg["favourites"].items())
+        items[tag - 1], items[tag] = items[tag], items[tag - 1]
+        self._cfg["favourites"] = dict(items)
+        self._rebuild()
+
+    def do_move_down(self, tag):
+        keys = list(self._cfg["favourites"].keys())
+        if tag < 0 or tag >= len(keys) - 1:
+            return
+        self._snapshot_fields()
+        items = list(self._cfg["favourites"].items())
+        items[tag], items[tag + 1] = items[tag + 1], items[tag]
+        self._cfg["favourites"] = dict(items)
+        self._rebuild()
 
     def do_toggle_mac(self):
         editable = not self.mac_field.isEditable()
@@ -588,10 +622,10 @@ class ShortcutsWindow:
                             break
 
         self._cfg_shortcuts[name] = {
-            "key_code": key_code,
-            "modifiers": new_mods,
-            "characters": chars,
-            "display": display,
+            "key_code": int(key_code),
+            "modifiers": int(new_mods),
+            "characters": str(chars),
+            "display": str(display),
         }
 
         row["field"].setStringValue_(display)
